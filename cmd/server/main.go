@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"time"
 	"syscall"
+	"time"
 
 	"github.com/icewem/notification-service/internal/handler"
 	"github.com/icewem/notification-service/internal/model"
@@ -16,27 +16,25 @@ import (
 )
 
 func main() {
-	// Канал для задач — буфер 100 уведомлений
+	// Канал для задач
 	jobs := make(chan model.Notification, 100)
 
-	// Запускаем worker pool — 3 воркера
+	// Запускаем worker pool
 	pool := service.NewWorkerPool(jobs, 3)
 	pool.Start()
 
-	// Создаём хендлер — передаём канал jobs
+	// Хендлер
 	notificationHandler := handler.NewNotificationHandler(jobs)
 
 	// Роутер
 	mux := http.NewServeMux()
 
-	// Health check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, `{"status": "ok"}`)
 	})
 
-	// Уведомления
 	mux.HandleFunc("/api/v1/notifications", notificationHandler.Create)
 	mux.HandleFunc("/api/v1/notifications/", notificationHandler.GetByID)
 
@@ -44,9 +42,13 @@ func main() {
 	srv := &http.Server{
 		Addr:    ":8080",
 		Handler: mux,
+		// Таймауты на уровне сервера
+		ReadTimeout:  5 * time.Second,  // максимум на чтение запроса
+		WriteTimeout: 10 * time.Second, // максимум на отправку ответа
+		IdleTimeout:  60 * time.Second, // максимум на keep-alive соединение
 	}
 
-	// Graceful shutdown — ловим сигналы остановки
+	// Ловим сигналы остановки
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -54,24 +56,30 @@ func main() {
 	go func() {
 		log.Println("Сервис запущен на :8080")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Ошибка запуска сервера: %v", err)
+			log.Fatalf("Ошибка запуска: %v", err)
 		}
 	}()
 
 	// Ждём сигнала остановки
-	<-quit
-	log.Println("Получен сигнал остановки...")
+	sig := <-quit
+	log.Printf("Получен сигнал: %v, начинаем остановку...", sig)
+
+	// Контекст с таймаутом на graceful shutdown
+	// даём 30 секунд чтобы завершить текущие запросы
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// Останавливаем HTTP сервер
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// новые запросы не принимаем, текущие дорабатывают
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Ошибка остановки сервера: %v", err)
 	}
+	log.Println("HTTP сервер остановлен")
 
-	// Закрываем канал jobs — воркеры завершат текущие задачи и остановятся
+	// Закрываем канал jobs
+	// воркеры доделают текущие задачи и завершатся
 	close(jobs)
 	pool.Stop()
 
-	log.Println("Сервис остановлен")
+	log.Println("Сервис остановлен корректно")
 }

@@ -13,9 +13,7 @@ import (
 
 // NotificationHandler — хендлер для работы с уведомлениями
 type NotificationHandler struct {
-	// jobs — канал куда кладём задачи для воркеров
-	jobs chan<- model.Notification
-	// store — простое хранилище в памяти (пока без БД)
+	jobs  chan<- model.Notification
 	store map[string]model.Notification
 }
 
@@ -29,20 +27,21 @@ func NewNotificationHandler(jobs chan<- model.Notification) *NotificationHandler
 
 // Create — POST /api/v1/notifications
 func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
-	// Декодируем тело запроса
+	// Берём контекст запроса — если клиент отключится,
+	// ctx автоматически отменится
+	ctx := r.Context()
+
 	var req model.CreateNotificationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error": "невалидный запрос"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Валидация
 	if req.UserID == "" || req.Title == "" || req.Body == "" {
 		http.Error(w, `{"error": "user_id, title и body обязательны"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Создаём уведомление
 	n := model.Notification{
 		ID:        generateID(),
 		UserID:    req.UserID,
@@ -53,13 +52,19 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	// Сохраняем в store
 	h.store[n.ID] = n
 
-	// Отправляем в worker pool через канал
-	h.jobs <- n
+	// Отправляем в воркер pool через select с ctx
+	// если клиент отключился — не кладём задачу в канал
+	select {
+	case h.jobs <- n:
+		// задача успешно добавлена в очередь
+	case <-ctx.Done():
+		// клиент отключился — не тратим ресурсы
+		http.Error(w, `{"error": "запрос отменён"}`, http.StatusRequestTimeout)
+		return
+	}
 
-	// Отвечаем клиенту
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(n)
@@ -67,14 +72,16 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 // GetByID — GET /api/v1/notifications/{id}
 func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	// Достаём id из URL
+	// Берём контекст — пригодится когда добавим БД
+	ctx := r.Context()
+	_ = ctx // пока не используем явно
+
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/notifications/")
 	if id == "" {
 		http.Error(w, `{"error": "id обязателен"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Ищем в store
 	n, ok := h.store[id]
 	if !ok {
 		http.Error(w, `{"error": "уведомление не найдено"}`, http.StatusNotFound)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -10,11 +11,8 @@ import (
 
 // WorkerPool — пул воркеров для обработки уведомлений
 type WorkerPool struct {
-	// jobs — канал из которого воркеры читают задачи
 	jobs    <-chan model.Notification
-	// workers — количество воркеров
 	workers int
-	// wg — ждём завершения всех воркеров
 	wg      sync.WaitGroup
 }
 
@@ -41,28 +39,39 @@ func (wp *WorkerPool) Stop() {
 	fmt.Println("Worker pool остановлен")
 }
 
-// worker — один воркер читает задачи из канала
+// worker — читает задачи из канала
 func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
 
 	for n := range wp.jobs {
-		// Читаем задачу из канала и обрабатываем
-		wp.process(id, n)
+		// Создаём контекст с таймаутом на обработку
+		// если за 5 секунд не успели — отменяем
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		if err := wp.process(ctx, id, n); err != nil {
+			fmt.Printf("воркер %d ошибка обработки id=%s: %v\n", id, n.ID, err)
+		}
+
+		// Всегда освобождаем ресурсы контекста
+		cancel()
 	}
 }
 
 // process — обрабатываем одно уведомление
-func (wp *WorkerPool) process(workerID int, n model.Notification) {
+func (wp *WorkerPool) process(ctx context.Context, workerID int, n model.Notification) error {
 	fmt.Printf(
-		"воркер %d обрабатывает уведомление id=%s type=%s user=%s\n",
+		"воркер %d обрабатывает id=%s type=%s user=%s\n",
 		workerID, n.ID, n.Type, n.UserID,
 	)
 
-	// Эмулируем отправку уведомления
-	time.Sleep(100 * time.Millisecond)
-
-	fmt.Printf(
-		"воркер %d отправил уведомление id=%s title=%s\n",
-		workerID, n.ID, n.Title,
-	)
+	// Эмулируем отправку через select с ctx.Done()
+	// чтобы можно было прервать если таймаут истёк
+	select {
+	case <-time.After(100 * time.Millisecond): // эмуляция работы
+		fmt.Printf("воркер %d отправил id=%s title=%s\n", workerID, n.ID, n.Title)
+		return nil
+	case <-ctx.Done():
+		// таймаут истёк или контекст отменён
+		return fmt.Errorf("таймаут обработки: %w", ctx.Err())
+	}
 }
