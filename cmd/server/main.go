@@ -16,17 +16,13 @@ import (
 )
 
 func main() {
-	// Канал для задач
 	jobs := make(chan model.Notification, 100)
 
-	// Запускаем worker pool
 	pool := service.NewWorkerPool(jobs, 3)
 	pool.Start()
 
-	// Хендлер
 	notificationHandler := handler.NewNotificationHandler(jobs)
 
-	// Роутер
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -35,24 +31,21 @@ func main() {
 		fmt.Fprintln(w, `{"status": "ok"}`)
 	})
 
-	mux.HandleFunc("/api/v1/notifications", notificationHandler.Create)
-	mux.HandleFunc("/api/v1/notifications/", notificationHandler.GetByID)
+	// Оборачиваем хендлеры в ErrorMiddleware
+	mux.HandleFunc("/api/v1/notifications", handler.ErrorMiddleware(notificationHandler.Create))
+	mux.HandleFunc("/api/v1/notifications/", handler.ErrorMiddleware(notificationHandler.GetByID))
 
-	// HTTP сервер
 	srv := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
-		// Таймауты на уровне сервера
-		ReadTimeout:  5 * time.Second,  // максимум на чтение запроса
-		WriteTimeout: 10 * time.Second, // максимум на отправку ответа
-		IdleTimeout:  60 * time.Second, // максимум на keep-alive соединение
+		Addr:         ":8080",
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
-	// Ловим сигналы остановки
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	// Запускаем сервер в горутине
 	go func() {
 		log.Println("Сервис запущен на :8080")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -60,24 +53,17 @@ func main() {
 		}
 	}()
 
-	// Ждём сигнала остановки
-	sig := <-quit
-	log.Printf("Получен сигнал: %v, начинаем остановку...", sig)
+	<-quit
+	log.Println("Получен сигнал остановки...")
 
-	// Контекст с таймаутом на graceful shutdown
-	// даём 30 секунд чтобы завершить текущие запросы
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Останавливаем HTTP сервер
-	// новые запросы не принимаем, текущие дорабатывают
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Ошибка остановки сервера: %v", err)
+		log.Fatalf("Ошибка остановки: %v", err)
 	}
 	log.Println("HTTP сервер остановлен")
 
-	// Закрываем канал jobs
-	// воркеры доделают текущие задачи и завершатся
 	close(jobs)
 	pool.Stop()
 

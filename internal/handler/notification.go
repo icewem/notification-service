@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/icewem/notification-service/internal/apperror"
 	"github.com/icewem/notification-service/internal/model"
 )
 
@@ -26,20 +27,27 @@ func NewNotificationHandler(jobs chan<- model.Notification) *NotificationHandler
 }
 
 // Create — POST /api/v1/notifications
-func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
-	// Берём контекст запроса — если клиент отключится,
-	// ctx автоматически отменится
+func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
 	var req model.CreateNotificationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error": "невалидный запрос"}`, http.StatusBadRequest)
-		return
+		// Оборачиваем ошибку с контекстом
+		return apperror.BadRequest("невалидный JSON")
 	}
 
-	if req.UserID == "" || req.Title == "" || req.Body == "" {
-		http.Error(w, `{"error": "user_id, title и body обязательны"}`, http.StatusBadRequest)
-		return
+	// Валидация
+	if req.UserID == "" {
+		return apperror.BadRequest("user_id обязателен")
+	}
+	if req.Title == "" {
+		return apperror.BadRequest("title обязателен")
+	}
+	if req.Body == "" {
+		return apperror.BadRequest("body обязателен")
+	}
+	if req.Type != model.TypeEmail && req.Type != model.TypePush && req.Type != model.TypeSMS {
+		return apperror.BadRequest("type должен быть email, push или sms")
 	}
 
 	n := model.Notification{
@@ -54,42 +62,34 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	h.store[n.ID] = n
 
-	// Отправляем в воркер pool через select с ctx
-	// если клиент отключился — не кладём задачу в канал
 	select {
 	case h.jobs <- n:
-		// задача успешно добавлена в очередь
 	case <-ctx.Done():
-		// клиент отключился — не тратим ресурсы
-		http.Error(w, `{"error": "запрос отменён"}`, http.StatusRequestTimeout)
-		return
+		return apperror.New(http.StatusRequestTimeout, "запрос отменён", ctx.Err())
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(n)
+	return nil
 }
 
 // GetByID — GET /api/v1/notifications/{id}
-func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	// Берём контекст — пригодится когда добавим БД
-	ctx := r.Context()
-	_ = ctx // пока не используем явно
-
+func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) error {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/notifications/")
 	if id == "" {
-		http.Error(w, `{"error": "id обязателен"}`, http.StatusBadRequest)
-		return
+		return apperror.BadRequest("id обязателен")
 	}
 
 	n, ok := h.store[id]
 	if !ok {
-		http.Error(w, `{"error": "уведомление не найдено"}`, http.StatusNotFound)
-		return
+		// Используем sentinel error + wrapping
+		return apperror.NotFound(fmt.Sprintf("уведомление %s не найдено", id))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(n)
+	return nil
 }
 
 // generateID — генерирует простой уникальный ID
