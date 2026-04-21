@@ -15,14 +15,14 @@ import (
 // NotificationHandler — хендлер для работы с уведомлениями
 type NotificationHandler struct {
 	jobs  chan<- model.Notification
-	store map[string]model.Notification
+	store *NotificationStore
 }
 
 // NewNotificationHandler — конструктор хендлера
 func NewNotificationHandler(jobs chan<- model.Notification) *NotificationHandler {
 	return &NotificationHandler{
 		jobs:  jobs,
-		store: make(map[string]model.Notification),
+		store: NewNotificationStore(),
 	}
 }
 
@@ -32,11 +32,9 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) err
 
 	var req model.CreateNotificationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Оборачиваем ошибку с контекстом
 		return apperror.BadRequest("невалидный JSON")
 	}
 
-	// Валидация
 	if req.UserID == "" {
 		return apperror.BadRequest("user_id обязателен")
 	}
@@ -60,7 +58,8 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) err
 		CreatedAt: time.Now(),
 	}
 
-	h.store[n.ID] = n
+	// Потокобезопасное сохранение
+	h.store.Set(n)
 
 	select {
 	case h.jobs <- n:
@@ -81,9 +80,9 @@ func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) er
 		return apperror.BadRequest("id обязателен")
 	}
 
-	n, ok := h.store[id]
+	// Потокобезопасное чтение
+	n, ok := h.store.Get(id)
 	if !ok {
-		// Используем sentinel error + wrapping
 		return apperror.NotFound(fmt.Sprintf("уведомление %s не найдено", id))
 	}
 
