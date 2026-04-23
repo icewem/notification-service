@@ -35,6 +35,9 @@ func main() {
 	mux.HandleFunc("/api/v1/notifications", handler.ErrorMiddleware(notificationHandler.Create))
 	mux.HandleFunc("/api/v1/notifications/", handler.ErrorMiddleware(notificationHandler.GetByID))
 
+	// Регистрируем pprof эндпоинты
+	handler.RegisterDebugHandlers(mux)
+
 	srv := &http.Server{
 		Addr:         ":8080",
 		Handler:      mux,
