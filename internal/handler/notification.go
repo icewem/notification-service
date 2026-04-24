@@ -15,7 +15,7 @@ import (
 // NotificationHandler — хендлер для работы с уведомлениями
 type NotificationHandler struct {
 	jobs  chan<- model.Notification
-	store *NotificationStore
+	store Store // интерфейс — можно подменить в тестах!
 }
 
 // NewNotificationHandler — конструктор хендлера
@@ -23,6 +23,14 @@ func NewNotificationHandler(jobs chan<- model.Notification) *NotificationHandler
 	return &NotificationHandler{
 		jobs:  jobs,
 		store: NewNotificationStore(),
+	}
+}
+
+// NewNotificationHandlerWithStore — конструктор для тестов
+func NewNotificationHandlerWithStore(jobs chan<- model.Notification, store Store) *NotificationHandler {
+	return &NotificationHandler{
+		jobs:  jobs,
+		store: store,
 	}
 }
 
@@ -58,7 +66,6 @@ func (h *NotificationHandler) Create(w http.ResponseWriter, r *http.Request) err
 		CreatedAt: time.Now(),
 	}
 
-	// Потокобезопасное сохранение
 	h.store.Set(n)
 
 	select {
@@ -80,7 +87,6 @@ func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) er
 		return apperror.BadRequest("id обязателен")
 	}
 
-	// Потокобезопасное чтение
 	n, ok := h.store.Get(id)
 	if !ok {
 		return apperror.NotFound(fmt.Sprintf("уведомление %s не найдено", id))
@@ -91,7 +97,6 @@ func (h *NotificationHandler) GetByID(w http.ResponseWriter, r *http.Request) er
 	return nil
 }
 
-// generateID — генерирует простой уникальный ID
 func generateID() string {
 	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Intn(1000))
 }

@@ -6,7 +6,15 @@ import (
 	"github.com/icewem/notification-service/internal/model"
 )
 
-// NotificationStore — потокобезопасное хранилище уведомлений
+// Store — интерфейс хранилища уведомлений
+// позволяет подменять реализацию в тестах
+type Store interface {
+	Set(n model.Notification)
+	Get(id string) (model.Notification, bool)
+	Count() int
+}
+
+// NotificationStore — потокобезопасное хранилище
 type NotificationStore struct {
 	mu    sync.RWMutex
 	items map[string]model.Notification
@@ -19,14 +27,12 @@ func NewNotificationStore() *NotificationStore {
 	}
 }
 
-// Set — сохранить уведомление
 func (s *NotificationStore) Set(n model.Notification) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.items[n.ID] = n
 }
 
-// Get — получить уведомление по ID
 func (s *NotificationStore) Get(id string) (model.Notification, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -34,7 +40,6 @@ func (s *NotificationStore) Get(id string) (model.Notification, bool) {
 	return n, ok
 }
 
-// Count — количество уведомлений
 func (s *NotificationStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
